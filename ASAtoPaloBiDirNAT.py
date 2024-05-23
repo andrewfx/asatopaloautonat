@@ -1,10 +1,10 @@
 import re
 
-def reverse_nat_statements(input_file, output_file, output_format):
+def parse_cisco_nat(input_file):
     with open(input_file, 'r') as file:
         lines = file.readlines()
 
-    output_lines = []
+    nat_entries = []
     i = 0
 
     while i < len(lines):
@@ -12,53 +12,77 @@ def reverse_nat_statements(input_file, output_file, output_format):
             object_network_line = lines[i].strip()
             nat_statement_line = lines[i + 1].strip()
 
-            # Check if the NAT statement is static
-            if 'static' in nat_statement_line and 'dynamic' not in nat_statement_line:
-                # Extract the object names and directions
-                match = re.search(r'nat \((.*?),(.*?)\) static (.*)', nat_statement_line)
-                if match:
-                    outside_interface, inside_interface, static_object = match.groups()
-
-                    if output_format.lower() == 'cisco':
-                        # Create the reverse NAT statement in Cisco ASA format
-                        reversed_nat_statement = f"nat ({inside_interface},{outside_interface}) static {object_network_line.split()[-1]}"
-                        output_lines.append(object_network_line)
-                        output_lines.append(reversed_nat_statement)
-                        output_lines.append(f"object network {static_object}")
-                        output_lines.append(f"nat ({outside_interface},{inside_interface}) static {object_network_line.split()[-1]}")
-                    elif output_format.lower() == 'palo alto':
-                        # Create the reverse NAT statement in Palo Alto format
-                        original_nat_rule = f"set nat rule {object_network_line.split()[-1]} from {outside_interface} to {inside_interface} source {static_object} destination any service any"
-                        reversed_nat_rule = f"set nat rule {static_object} from {inside_interface} to {outside_interface} source {object_network_line.split()[-1]} destination any service any"
-                        output_lines.append(original_nat_rule)
-                        output_lines.append(reversed_nat_rule)
-
-            i += 2  # Skip to the next pair of lines
+            nat_entries.append((object_network_line, nat_statement_line))
+            i += 2
         else:
-            i += 1  # Move to the next line
+            i += 1
+    
+    return nat_entries
 
+def generate_palo_alto_nat(nat_entries):
+    palo_alto_commands = []
+
+    for object_network_line, nat_statement_line in nat_entries:
+        object_name = object_network_line.split()[-1]
+        match_static = re.search(r'nat \((.*?),(.*?)\) static (.*)', nat_statement_line)
+        match_dynamic = re.search(r'nat \((.*?),(.*?)\) dynamic (.*)', nat_statement_line)
+
+        if match_static:
+            outside_interface, inside_interface, static_object = match_static.groups()
+
+            # Generate Palo Alto commands for the original static NAT statement
+            palo_alto_commands.append(f'set vsys vsys1 rulebase nat rules "AutoNat {object_name}" source-translation static-ip bi-directional no')
+            palo_alto_commands.append(f'set vsys vsys1 rulebase nat rules "AutoNat {object_name}" source-translation static-ip translated-address {static_object}')
+            palo_alto_commands.append(f'set vsys vsys1 rulebase nat rules "AutoNat {object_name}" to {outside_interface}')
+            palo_alto_commands.append(f'set vsys vsys1 rulebase nat rules "AutoNat {object_name}" from {inside_interface}')
+            palo_alto_commands.append(f'set vsys vsys1 rulebase nat rules "AutoNat {object_name}" source {object_name}')
+            palo_alto_commands.append(f'set vsys vsys1 rulebase nat rules "AutoNat {object_name}" destination any')
+            palo_alto_commands.append(f'set vsys vsys1 rulebase nat rules "AutoNat {object_name}" service any')
+            palo_alto_commands.append(f'set vsys vsys1 rulebase nat rules "AutoNat {object_name}" to-interface any')
+
+            # Generate Palo Alto commands for the reverse static NAT statement
+            reversed_object_name = f"Cl AutoNat {object_name}"
+            palo_alto_commands.append(f'set vsys vsys1 rulebase nat rules "{reversed_object_name}" source-translation static-ip bi-directional no')
+            palo_alto_commands.append(f'set vsys vsys1 rulebase nat rules "{reversed_object_name}" source-translation static-ip translated-address {object_name}')
+            palo_alto_commands.append(f'set vsys vsys1 rulebase nat rules "{reversed_object_name}" to {inside_interface}')
+            palo_alto_commands.append(f'set vsys vsys1 rulebase nat rules "{reversed_object_name}" from {outside_interface}')
+            palo_alto_commands.append(f'set vsys vsys1 rulebase nat rules "{reversed_object_name}" source {static_object}')
+            palo_alto_commands.append(f'set vsys vsys1 rulebase nat rules "{reversed_object_name}" destination any')
+            palo_alto_commands.append(f'set vsys vsys1 rulebase nat rules "{reversed_object_name}" service any')
+            palo_alto_commands.append(f'set vsys vsys1 rulebase nat rules "{reversed_object_name}" to-interface any')
+
+        elif match_dynamic:
+            outside_interface, inside_interface, dynamic_object = match_dynamic.groups()
+
+            # Generate Palo Alto commands for the dynamic NAT statement
+            palo_alto_commands.append(f'set vsys vsys1 rulebase nat rules "AutoNat {object_name}" source-translation dynamic-ip-and-port translated-address {dynamic_object}')
+            palo_alto_commands.append(f'set vsys vsys1 rulebase nat rules "AutoNat {object_name}" to {outside_interface}')
+            palo_alto_commands.append(f'set vsys vsys1 rulebase nat rules "AutoNat {object_name}" from {inside_interface}')
+            palo_alto_commands.append(f'set vsys vsys1 rulebase nat rules "AutoNat {object_name}" source {object_name}')
+            palo_alto_commands.append(f'set vsys vsys1 rulebase nat rules "AutoNat {object_name}" destination any')
+            palo_alto_commands.append(f'set vsys vsys1 rulebase nat rules "AutoNat {object_name}" service any')
+            palo_alto_commands.append(f'set vsys vsys1 rulebase nat rules "AutoNat {object_name}" to-interface any')
+
+    return palo_alto_commands
+
+def write_output(output_file, commands):
     with open(output_file, 'w') as file:
-        for line in output_lines:
-            file.write(line + '\n')
+        for command in commands:
+            file.write(command + '\n')
 
 def main():
     input_file = 'input_nat_statements.txt'
-    output_file = 'reversed_nat_statements.txt'
+    output_file = 'palo_alto_nat_statements.txt'
+
+    # Parse the Cisco NAT statements
+    nat_entries = parse_cisco_nat(input_file)
     
-    print("Choose the output format:")
-    print("1. Cisco ASA CLI commands")
-    print("2. Palo Alto CLI commands")
-    choice = input("Enter 1 or 2: ").strip()
-
-    if choice == '1':
-        output_format = 'cisco'
-    elif choice == '2':
-        output_format = 'palo alto'
-    else:
-        print("Invalid choice. Defaulting to Cisco ASA CLI commands.")
-        output_format = 'cisco'
-
-    reverse_nat_statements(input_file, output_file, output_format)
+    # Generate the corresponding Palo Alto NAT commands
+    palo_alto_commands = generate_palo_alto_nat(nat_entries)
+    
+    # Write the output to a file
+    write_output(output_file, palo_alto_commands)
+    print(f"Palo Alto NAT statements written to {output_file}")
 
 if __name__ == "__main__":
     main()
